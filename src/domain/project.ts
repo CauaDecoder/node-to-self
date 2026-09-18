@@ -76,6 +76,7 @@ export const noteSchema = z.object({
   markdown: z.string(),
   association: associationSchema,
   position: positionSchema.optional(),
+  size: sizeSchema.optional(),
 }).strict()
 
 export const attachmentSchema = z.object({
@@ -223,6 +224,8 @@ export type NodeEntity = z.infer<typeof nodeSchema>
 export type ConnectionEntity = z.infer<typeof connectionSchema>
 export type GroupEntity = z.infer<typeof groupSchema>
 export type NoteEntity = z.infer<typeof noteSchema>
+export type AttachmentEntity = z.infer<typeof attachmentSchema>
+export type FieldDefinition = z.infer<typeof fieldDefinitionSchema>
 
 export function parseProjectDocument(input: unknown): ProjectDocument {
   return projectDocumentSchema.parse(input)

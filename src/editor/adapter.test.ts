@@ -34,7 +34,54 @@ describe('documentToFlow', () => {
     if (mappedGroup === undefined || mappedNode === undefined || edge === undefined) throw new Error('Expected mapped flow entities.')
 
     expect(mappedGroup).toMatchObject({ position: { x: 80, y: 40 }, width: 600, height: 400 })
-    expect(mappedNode).toMatchObject({ parentId: groupId, position: { x: 24, y: 32 }, width: 180, height: 80 })
+    expect(mappedNode).toMatchObject({ type: 'concept', data: { typeName: 'Concept' }, parentId: groupId, position: { x: 24, y: 32 }, width: 180, height: 80 })
     expect(edge).toMatchObject({ id: connectionId, source: sourceId, target: targetId, sourceHandle: 'outbound', targetHandle: 'inbound', label: 'feeds' })
+    expect(edge.type).toBe('labeled')
+    expect(edge.markerEnd).toMatchObject({ type: 'arrowclosed' })
+  })
+
+  it('emits concept nodes with the type name and labeled smoothstep edges', () => {
+    const project = createEmptyProject()
+    const typeId = crypto.randomUUID()
+    const nodeId = crypto.randomUUID()
+    const connectionId = crypto.randomUUID()
+    const document = parseProjectDocument({
+      ...project,
+      nodeTypes: [{ id: typeId, name: 'Database', color: '#e3a968', icon: 'database', fields: [] }],
+      nodes: [
+        { id: nodeId, typeId, title: 'Primary', description: 'Stores rows', tags: ['core'], properties: {}, color: '#e3a968', icon: 'database', position: { x: 0, y: 0 }, size: { width: 200, height: 100 } },
+      ],
+      connections: [{ id: connectionId, sourceNodeId: nodeId, targetNodeId: nodeId, label: 'feeds', relation: 'feeds', properties: {} }],
+    })
+    const flow = documentToFlow(document)
+    expect(flow.nodes).toHaveLength(1)
+    const node = flow.nodes[0]
+    if (node.type !== 'concept') throw new Error('Expected a concept node.')
+    expect(node.type).toBe('concept')
+    expect(node.data).toEqual({ title: 'Primary', description: 'Stores rows', tags: ['core'], color: '#e3a968', icon: 'database', typeName: 'Database' })
+    expect(flow.edges[0].type).toBe('labeled')
+  })
+
+  it('maps library notes without positions to nothing and positioned notes to note nodes', () => {
+    const project = createEmptyProject()
+    const noteId = crypto.randomUUID()
+    const document = parseProjectDocument({
+      ...project,
+      notes: [{ id: noteId, title: 'Decision log', category: 'decision', markdown: 'Why we chose Postgres', association: { kind: 'project', id: project.id }, position: { x: 30, y: 40 } }],
+    })
+    const flow = documentToFlow(document)
+    expect(flow.nodes).toHaveLength(1)
+    expect(flow.nodes[0]).toMatchObject({ id: noteId, type: 'note', position: { x: 30, y: 40 }, width: 260, height: 180 })
+  })
+
+  it('uses a note size when present instead of the default dimensions', () => {
+    const project = createEmptyProject()
+    const noteId = crypto.randomUUID()
+    const document = parseProjectDocument({
+      ...project,
+      notes: [{ id: noteId, title: 'Sized note', category: 'general', markdown: '', association: { kind: 'project', id: project.id }, position: { x: 0, y: 0 }, size: { width: 320, height: 240 } }],
+    })
+    const flow = documentToFlow(document)
+    expect(flow.nodes[0]).toMatchObject({ width: 320, height: 240 })
   })
 })

@@ -50,6 +50,16 @@ describe('project document', () => {
     })).toThrow('Parent group does not exist')
   })
 
+  it('accepts a note with or without an optional size, and rejects a non-positive size', () => {
+    const project = createEmptyProject()
+    const withoutSize = { ...project, notes: [{ id: id(), title: 'Note', category: 'general', markdown: '', association: { kind: 'project', id: project.id } }] }
+    expect(parseProjectDocument(withoutSize).notes[0].size).toBeUndefined()
+    const withSize = { ...project, notes: [{ id: id(), title: 'Note', category: 'general', markdown: '', association: { kind: 'project', id: project.id }, position: { x: 0, y: 0 }, size: { width: 220, height: 140 } }] }
+    expect(parseProjectDocument(withSize).notes[0].size).toEqual({ width: 220, height: 140 })
+    const invalidSize = { ...project, notes: [{ id: id(), title: 'Note', category: 'general', markdown: '', association: { kind: 'project', id: project.id }, position: { x: 0, y: 0 }, size: { width: 0, height: 140 } }] }
+    expect(() => parseProjectDocument(invalidSize)).toThrow()
+  })
+
   it('rejects self-referential and indirect group cycles', () => {
     const project = createEmptyProject(); const first = id(); const second = id()
     const group = (groupId: string, parentGroupId?: string) => ({ id: groupId, title: 'Group', color: '#000', position: { x: 0, y: 0 }, size: { width: 1, height: 1 }, ...(parentGroupId === undefined ? {} : { parentGroupId }) })

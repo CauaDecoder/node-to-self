@@ -51,7 +51,7 @@ The current verification record, including environment-limited checks, is in [do
 
 ## Design and scope
 
-The editor uses a dark, compact canvas with a discrete grid, a toolbar, an inspector, groups, Markdown notes, configurable node types, search, command palette actions, local attachments, undo/redo, and versioned JSON backups. See [docs/README.md](docs/README.md) for the implementation tickets and [docs/references](docs/references) for the visual guide.
+The editor uses a dark, compact canvas with a discrete grid, a collapsible sidebar (projects, outline, notes), a contextual selection toolbar, an on-demand details drawer, groups, editable and resizable Markdown notes, configurable node types, search, command palette actions, local attachments, undo/redo, and versioned JSON backups. See [docs/README.md](docs/README.md) for the implementation tickets and [docs/references](docs/references) for the visual guide.
 
 The MVP intentionally does not include accounts, authentication, collaboration, synchronization, a backend, AI, plugins, auto-layout, multiple canvases per project, or PNG/SVG/Mermaid export.
 

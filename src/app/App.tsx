@@ -1,92 +1,242 @@
-import { Background, Controls, Handle, MiniMap, NodeResizer, Position, ReactFlow, type Connection, type NodeMouseHandler, type NodeProps, type ReactFlowInstance } from '@xyflow/react'
-import { useEffect, useMemo, useRef, useState } from 'react'
-import '@xyflow/react/dist/style.css'
-import { documentToFlow, type CanvasGroupData, type CanvasNodeData, type CanvasNoteData } from '../editor/adapter'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { ReactFlowProvider, type ReactFlowInstance } from '@xyflow/react'
+import { Canvas } from '../editor/Canvas'
+import type { FlowEdge, FlowNode } from '../editor/adapter'
+import { exportMarkdown } from '../storage/attachments'
 import { useEditorStore } from '../store/editor-store'
-import { useProjectStore, type SaveStatus } from '../store/project-store'
-import { projectTemplates, type ProjectTemplateId } from '../templates/projectTemplates'
-import { renderSafeMarkdown } from '../notes/markdown'
-import { searchProject, type SearchResult } from '../search/projectSearch'
+import { useProjectStore, type ProjectSummary } from '../store/project-store'
+import { CommandPalette } from './components/CommandPalette'
+import { ConfirmDialog, type ConfirmRequest } from './components/ConfirmDialog'
+import { DetailsDrawer } from './components/DetailsDrawer'
+import { SelectionToolbar } from './components/SelectionToolbar'
+import { CanvasToolbar } from './components/CanvasToolbar'
+import { SaveBanner } from './components/SaveBanner'
+import { Sidebar } from './components/Sidebar'
+import { Topbar } from './components/Topbar'
+import { Welcome } from './components/Welcome'
+import { useEditorPreferences } from './hooks/useEditorPreferences'
+import { useShortcuts } from './hooks/useShortcuts'
+import { selectionEntities } from './actions'
 import './app.css'
 
-const saveLabel: Record<SaveStatus, string> = { saved: 'Saved', pending: 'Changes pending', saving: 'Saving…', error: 'Save failed', conflict: 'Conflict detected' }
-const isTextInput = (target: EventTarget | null) => target instanceof HTMLElement && (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName))
-const toProperties = (value: string): Record<string, unknown> => { try { const parsed: unknown = JSON.parse(value); return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {} } catch { return {} } }
-
-function DiagramNode({ id, data, selected }: NodeProps): React.JSX.Element {
-  const nodeData = data as CanvasNodeData
-  return <><NodeResizer isVisible={selected} minWidth={120} minHeight={60} color={nodeData.color} onResizeEnd={(_, size) => nodeData.onResize?.(id, { width: size.width, height: size.height })} /><Handle type="target" position={Position.Left} /><div className="diagram-node" style={{ borderColor: nodeData.color }}><span style={{ color: nodeData.color }}>{nodeData.icon}</span><strong>{nodeData.title}</strong></div><Handle type="source" position={Position.Right} /></>
+function downloadProject(json: string, name: string, extension = 'json'): void {
+  const url = URL.createObjectURL(new Blob([json], { type: 'application/json' }))
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = `${name.replaceAll(/[^a-z0-9]+/gi, '-').toLowerCase() || 'project'}.${extension}`
+  anchor.click()
+  URL.revokeObjectURL(url)
 }
 
-function DiagramGroup({ id, data, selected }: NodeProps): React.JSX.Element {
-  const groupData = data as CanvasGroupData
-  return <><NodeResizer isVisible={selected} minWidth={160} minHeight={120} color={groupData.color} onResizeEnd={(_, size) => groupData.onResize?.(id, { width: size.width, height: size.height })} /><div className="diagram-group" style={{ borderColor: groupData.color }}><strong>{groupData.title}</strong></div></>
-}
-
-function DiagramNote({ data }: NodeProps): React.JSX.Element {
-  const note = data as CanvasNoteData
-  return <article className="diagram-note"><span>{note.category}</span><strong>{note.title}</strong><div className="note-preview" dangerouslySetInnerHTML={{ __html: renderSafeMarkdown(note.markdown.slice(0, 140)) }} /></article>
-}
-
-const nodeTypes = { editable: DiagramNode, 'editable-group': DiagramGroup, note: DiagramNote }
-function IconButton({ label, children, onClick, disabled = false }: { label: string; children: string; onClick?: () => void; disabled?: boolean }): React.JSX.Element { return <button className="tool-button" type="button" aria-label={label} onClick={onClick} disabled={disabled}>{children}</button> }
-function downloadProject(json: string, name: string, extension = 'json'): void { const url = URL.createObjectURL(new Blob([json], { type: 'application/json' })); const anchor = document.createElement('a'); anchor.href = url; anchor.download = `${name.replaceAll(/[^a-z0-9]+/gi, '-').toLowerCase() || 'project'}.${extension}`; anchor.click(); URL.revokeObjectURL(url) }
-
-type PaletteCommand = { id: string; title: string; shortcut?: string; disabled?: boolean; run: () => void }
-function CommandPalette({ project, commands, onResult, onClose }: { project: Parameters<typeof searchProject>[0]; commands: PaletteCommand[]; onResult: (result: SearchResult) => void; onClose: () => void }): React.JSX.Element {
-  const [query, setQuery] = useState(''); const [index, setIndex] = useState(0); const input = useRef<HTMLInputElement>(null)
-  useEffect(() => { input.current?.focus() }, [])
-  const results = useMemo(() => query ? searchProject(project, query) : [], [project, query])
-  const items = results.length ? results.map((result) => ({ id: result.id, title: result.title, context: result.context, run: () => onResult(result) })) : commands.filter((command) => !query || command.title.toLocaleLowerCase().includes(query.toLocaleLowerCase())).map((command) => ({ ...command, context: command.shortcut ?? 'Command' }))
-  const select = () => { const item = items[index]; if (item && !('disabled' in item && item.disabled === true)) { item.run(); onClose() } }
-  return <div className="palette-backdrop" role="presentation" onMouseDown={onClose}><section className="command-palette" role="dialog" aria-modal="true" aria-label="Command palette" onMouseDown={(event) => event.stopPropagation()}><input ref={input} aria-label="Search project or commands" placeholder="Search project or commands…" value={query} onChange={(event) => { setQuery(event.target.value); setIndex(0) }} onKeyDown={(event) => { if (event.key === 'Escape') onClose(); if (event.key === 'ArrowDown') { event.preventDefault(); setIndex((value) => Math.min(value + 1, Math.max(items.length - 1, 0))) } if (event.key === 'ArrowUp') { event.preventDefault(); setIndex((value) => Math.max(value - 1, 0)) } if (event.key === 'Enter') { event.preventDefault(); select() } }} /><div className="palette-items">{items.map((item, itemIndex) => <button key={`${item.id}-${itemIndex}`} type="button" className={itemIndex === index ? 'active' : ''} disabled={'disabled' in item && item.disabled === true} onMouseEnter={() => setIndex(itemIndex)} onClick={() => { item.run(); onClose() }}><span>{item.title}</span><small>{item.context}</small></button>)}{!items.length && <p>No matching content.</p>}</div><footer>↑↓ Navigate · Enter select · Esc close</footer></section></div>
-}
+type Editing = { nodeId: string; target: 'title' | 'body'; sequence: number } | null
 
 export function App(): React.JSX.Element {
-  const inspectorPanel = useEditorStore((state) => state.inspectorPanel); const setInspectorPanel = useEditorStore((state) => state.setInspectorPanel)
-  const selectedIds = useEditorStore((state) => state.selectedIds); const setSelectedIds = useEditorStore((state) => state.setSelectedIds)
+  return <ReactFlowProvider><EditorApp /></ReactFlowProvider>
+}
+
+function EditorApp(): React.JSX.Element {
+  const smallViewport = useEditorPreferences()
+  const sidebarWidth = useEditorStore((state) => state.sidebarWidth)
+  const sidebarOpen = useEditorStore((state) => state.sidebarOpen)
+  const sidebarSections = useEditorStore((state) => state.sidebarSections)
+  const selectedIds = useEditorStore((state) => state.selectedIds)
+  const detailsOpen = useEditorStore((state) => state.detailsOpen)
+  const dialog = useEditorStore((state) => state.dialog)
   const store = useProjectStore()
-  const [newName, setNewName] = useState('Untitled project'); const [templateId, setTemplateId] = useState<ProjectTemplateId>('blank'); const [importError, setImportError] = useState<string | null>(null); const [paletteOpen, setPaletteOpen] = useState(false)
-  const fileInput = useRef<HTMLInputElement>(null); const flowInstance = useRef<ReactFlowInstance<any, any> | null>(null); const editTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined); const priorFocus = useRef<HTMLElement | null>(null)
+  const [importError, setImportError] = useState<string | null>(null)
+  const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null)
+  const [editing, setEditing] = useState<Editing>(null)
+  const editSequence = useRef(0)
+  const fileInput = useRef<HTMLInputElement>(null)
+  const [flowInstanceState, setFlowInstanceState] = useState<ReactFlowInstance<FlowNode, FlowEdge> | null>(null)
+  const flowInstance = useRef<ReactFlowInstance<FlowNode, FlowEdge> | null>(null)
+  const priorFocus = useRef<HTMLElement | null>(null)
   useEffect(() => { void store.initialize().catch(() => undefined) }, [store.initialize])
-  useEffect(() => () => { if (editTimer.current) clearTimeout(editTimer.current) }, [])
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (isTextInput(event.target)) return
-      const modifier = event.ctrlKey || event.metaKey; const key = event.key.toLowerCase()
-      if (modifier && key === 'k') { event.preventDefault(); priorFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; setPaletteOpen(true); return }
-      const selected = useEditorStore.getState().selectedIds
-      const remove = () => { const active = useProjectStore.getState().activeProject; if (!active) return; const nodeIds = active.nodes.filter((node) => selected.includes(node.id)).map((node) => node.id); const edgeIds = active.connections.filter((edge) => selected.includes(edge.id)).map((edge) => edge.id); if (nodeIds.length) store.removeNodes(nodeIds); edgeIds.forEach(store.disconnect) }
-      if ((event.key === 'Delete' || event.key === 'Backspace') && selected.length) { event.preventDefault(); remove(); return }
-      if (!modifier) return
-      if (key === 'c') { event.preventDefault(); store.copySelection(selected) }
-      if (key === 'v') { event.preventDefault(); store.pasteClipboard() }
-      if (key === 'd') { event.preventDefault(); store.duplicateSelection(selected) }
-      if (key === 'z') { event.preventDefault(); event.shiftKey ? store.redo() : store.undo() }
-      if (key === 'y') { event.preventDefault(); store.redo() }
-    }
-    window.addEventListener('keydown', onKeyDown); return () => window.removeEventListener('keydown', onKeyDown)
-  }, [store])
-  if (!store.activeProject) return <main className="welcome" aria-label="Project chooser"><div><div className="brand"><span className="brand-mark">◈</span><span>Mind Map</span></div><h1>Start a local project</h1><p>Create a project to begin mapping ideas. Your work stays in this browser.</p><form onSubmit={(event) => { event.preventDefault(); void store.createProject(newName, templateId) }}><label htmlFor="new-project-name">Project name</label><input id="new-project-name" value={newName} onChange={(event) => setNewName(event.target.value)} /><label htmlFor="project-template">Template</label><select id="project-template" value={templateId} onChange={(event) => setTemplateId(event.target.value as ProjectTemplateId)}>{projectTemplates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}</select><button type="submit">Create project</button></form>{store.projects.length > 0 && <div className="project-list"><h2>Recent projects</h2>{store.projects.map((item) => <button key={item.id} type="button" onClick={() => void store.openProject(item.id)}>{item.name}</button>)}</div>}</div></main>
-
-  const project = store.activeProject; const flow = documentToFlow(project, { onResize: (id, size) => store.updateNode(id, { size }), onResizeGroup: store.resizeGroup })
-  const selectedNode = selectedIds.length === 1 ? project.nodes.find((node) => node.id === selectedIds[0]) : undefined
-  const selectedConnection = selectedIds.length === 1 ? project.connections.find((edge) => edge.id === selectedIds[0]) : undefined
-  const selectedGroup = selectedIds.length === 1 ? project.groups.find((group) => group.id === selectedIds[0]) : undefined
-  const selectedNote = selectedIds.length === 1 ? project.notes.find((note) => note.id === selectedIds[0]) : undefined
-  const queueNodeEdit = (patch: Parameters<typeof store.updateNode>[1]) => { if (!selectedNode) return; if (editTimer.current) clearTimeout(editTimer.current); editTimer.current = setTimeout(() => store.updateNode(selectedNode.id, patch), 750) }
-  const flushNodeEdit = (patch: Parameters<typeof store.updateNode>[1]) => { if (editTimer.current) clearTimeout(editTimer.current); if (selectedNode) store.updateNode(selectedNode.id, patch) }
-  const deleteSelection = () => { const nodeIds = project.nodes.filter((node) => selectedIds.includes(node.id)).map((node) => node.id); const edgeIds = project.connections.filter((edge) => selectedIds.includes(edge.id)).map((edge) => edge.id); if (nodeIds.length) store.removeNodes(nodeIds); edgeIds.forEach(store.disconnect); setSelectedIds([]) }
-  const exportCurrentProject = () => { void store.exportBackup().then((json) => { if (json) downloadProject(json, project.name) }).catch(() => undefined) }
-  const onNodeClick: NodeMouseHandler = (_, node) => setSelectedIds([node.id])
-  const onConnect = (connection: Connection) => { if (connection.source && connection.target) store.connectNodes(connection.source, connection.target) }
-  const paletteCommands: PaletteCommand[] = [
-    { id: 'node', title: 'Create node', shortcut: 'N', run: () => store.addNode() }, { id: 'note', title: 'Create visual note', shortcut: 'Shift+N', run: () => store.addNote({ kind: 'project', id: project.id }, { x: 180, y: 220 }) }, { id: 'group', title: 'Group selection', shortcut: 'Ctrl/⌘+G', disabled: !selectedIds.length, run: () => store.createGroup(selectedIds) }, { id: 'duplicate', title: 'Duplicate selection', shortcut: 'Ctrl/⌘+D', disabled: !selectedIds.length, run: () => store.duplicateSelection(selectedIds) }, { id: 'delete', title: 'Delete selection', shortcut: 'Delete', disabled: !selectedIds.length, run: deleteSelection }, { id: 'undo', title: 'Undo', shortcut: 'Ctrl/⌘+Z', disabled: !store.history.length, run: store.undo }, { id: 'redo', title: 'Redo', shortcut: 'Ctrl/⌘+Y', disabled: !store.redoStack.length, run: store.redo }, { id: 'import', title: 'Import project', run: () => fileInput.current?.click() }, { id: 'export', title: 'Export project', run: exportCurrentProject }, { id: 'fit', title: 'Fit content', shortcut: 'F', run: () => void flowInstance.current?.fitView({ padding: 0.2 }) },
-  ]
-
-  return <div className="editor-shell"><header className="topbar"><div className="brand"><span className="brand-mark">◈</span><span>Mind Map</span></div><div className="project-title"><input aria-label="Project name" value={project.name} onChange={(event) => store.renameProject(event.target.value)} /><span>Local workspace</span></div>{selectedGroup ? <div className="group-quick"><select aria-label="Change group parent" value={selectedGroup.parentGroupId ?? ''} onChange={(event) => store.changeGroupParent(selectedGroup.id, event.target.value || undefined)}><option value="">Canvas</option>{project.groups.filter((group) => group.id !== selectedGroup.id).map((group) => <option key={group.id} value={group.id}>{group.title}</option>)}</select><button type="button" onClick={() => store.ungroup(selectedGroup.id)}>Ungroup</button><button type="button" onClick={() => { if (window.confirm('Delete this group and every descendant?')) store.deleteGroup(selectedGroup.id, true) }}>Delete descendants</button></div> : selectedNote ? <div className="note-quick"><input aria-label="Note title" defaultValue={selectedNote.title} onBlur={(event) => store.updateNote(selectedNote.id, { title: event.target.value || 'Untitled note' })} /><select aria-label="Note category" defaultValue={selectedNote.category} onChange={(event) => store.updateNote(selectedNote.id, { category: event.target.value as typeof selectedNote.category })}><option value="general">General</option><option value="decision">Decision</option><option value="requirement">Requirement</option><option value="documentation">Documentation</option><option value="prompt">Prompt</option></select></div> : <div className={`save-status ${store.saveStatus}`} aria-live="polite"><i /> {saveLabel[store.saveStatus]}</div>}</header><main className="workspace" aria-label="Mind Map editor">
-    <nav className="toolbar" aria-label="Canvas tools"><IconButton label="Add node" onClick={() => store.addNode({ x: 120 + project.nodes.length * 30, y: 100 + project.nodes.length * 25 })}>＋</IconButton><IconButton label="Add visual note" onClick={() => store.addNote({ kind: 'project', id: project.id }, { x: 180 + project.notes.length * 30, y: 220 })}>▤</IconButton><IconButton label="Group selection" onClick={() => store.createGroup(selectedIds)} disabled={!selectedIds.length}>▭</IconButton><IconButton label="Undo" onClick={store.undo} disabled={store.history.length === 0}>↶</IconButton><IconButton label="Redo" onClick={store.redo} disabled={store.redoStack.length === 0}>↷</IconButton><span className="toolbar-divider" /><IconButton label="Copy selection" onClick={() => store.copySelection(selectedIds)} disabled={!selectedIds.length}>⧉</IconButton><IconButton label="Paste" onClick={store.pasteClipboard}>▣</IconButton><IconButton label="Duplicate selection" onClick={() => store.duplicateSelection(selectedIds)} disabled={!selectedIds.length}>⊞</IconButton><IconButton label="Delete selection" onClick={deleteSelection} disabled={!selectedIds.length}>⌫</IconButton><IconButton label="Fit content" onClick={() => void flowInstance.current?.fitView({ padding: 0.2 })}>⊡</IconButton><span className="toolbar-divider" /><IconButton label="Export project" onClick={exportCurrentProject}>⇩</IconButton><IconButton label="Import project" onClick={() => fileInput.current?.click()}>⇧</IconButton><input ref={fileInput} className="visually-hidden" type="file" accept="application/json" onChange={(event) => { const file = event.target.files?.[0]; if (!file) return; void file.text().then(store.importProject).then(() => setImportError(null)).catch((error: unknown) => setImportError(error instanceof Error ? error.message : 'Import failed.')); event.currentTarget.value = '' }} /></nav>
-    <section className="canvas-region" aria-label="Project canvas"><ReactFlow nodes={flow.nodes} edges={flow.edges} nodeTypes={nodeTypes} fitView nodesDraggable nodesConnectable elementsSelectable selectionOnDrag multiSelectionKeyCode={['Control', 'Meta']} onInit={(instance) => { flowInstance.current = instance }} onNodeClick={onNodeClick} onEdgeClick={(_, edge) => setSelectedIds([edge.id])} onSelectionChange={({ nodes, edges }) => setSelectedIds([...nodes.map((node) => node.id), ...edges.map((edge) => edge.id)])} onPaneClick={() => setSelectedIds([])} onNodeDragStop={(_, node) => store.moveElements({ [node.id]: node.position })} onConnect={onConnect} onEdgesDelete={(edges) => edges.forEach((edge) => store.disconnect(edge.id))} onNodesDelete={(nodes) => store.removeNodes(nodes.map((node) => node.id))} proOptions={{ hideAttribution: true }}>{project.settings.showGrid && <Background gap={project.canvas.gridSize} size={1} color="#303239" />}<MiniMap pannable zoomable nodeColor={(node) => ('color' in node.data ? String(node.data.color) : '#6b7280')} /><Controls /></ReactFlow>{project.nodes.length === 0 && <div className="canvas-empty" aria-hidden="true"><span>Start mapping your ideas</span><small>Add a node, then connect it to the next one.</small></div>}</section>
-    {inspectorPanel === 'inspector' ? <aside className="inspector" aria-label="Inspector"><div className="panel-heading"><div><span className="eyebrow">INSPECTOR</span><h1>{selectedNode ? 'Edit node' : selectedConnection ? 'Edit connection' : 'Nothing selected'}</h1></div><button type="button" aria-label="Close inspector" onClick={() => setInspectorPanel('none')}>×</button></div>{selectedNode ? <div className="node-form" key={selectedNode.id}><label htmlFor="node-title">Title</label><input id="node-title" defaultValue={selectedNode.title} onChange={(event) => queueNodeEdit({ title: event.target.value || 'Untitled node' })} onBlur={(event) => flushNodeEdit({ title: event.target.value || 'Untitled node' })} /><label htmlFor="node-description">Description</label><textarea id="node-description" defaultValue={selectedNode.description} onChange={(event) => queueNodeEdit({ description: event.target.value })} onBlur={(event) => flushNodeEdit({ description: event.target.value })} /><label htmlFor="node-tags">Tags</label><input id="node-tags" defaultValue={selectedNode.tags.join(', ')} onBlur={(event) => flushNodeEdit({ tags: event.target.value.split(',').map((tag) => tag.trim()).filter(Boolean) })} /><label htmlFor="node-color">Color</label><input id="node-color" defaultValue={selectedNode.color} onBlur={(event) => flushNodeEdit({ color: event.target.value || '#7c6cff' })} /><label htmlFor="node-icon">Icon</label><input id="node-icon" defaultValue={selectedNode.icon} onBlur={(event) => flushNodeEdit({ icon: event.target.value || '◇' })} /><label htmlFor="node-properties">Properties (JSON)</label><textarea id="node-properties" defaultValue={JSON.stringify(selectedNode.properties, null, 2)} onBlur={(event) => flushNodeEdit({ properties: toProperties(event.target.value) })} /><button type="button" className="danger" onClick={() => store.removeNodes([selectedNode.id])}>Delete node</button></div> : selectedConnection ? <div className="node-form" key={selectedConnection.id}><label htmlFor="edge-label">Label</label><input id="edge-label" defaultValue={selectedConnection.label} onBlur={(event) => store.updateConnection(selectedConnection.id, { label: event.target.value })} /><label htmlFor="edge-relation">Relation</label><input id="edge-relation" defaultValue={selectedConnection.relation} onBlur={(event) => store.updateConnection(selectedConnection.id, { relation: event.target.value || 'connects to' })} /><label htmlFor="edge-properties">Properties (JSON)</label><textarea id="edge-properties" defaultValue={JSON.stringify(selectedConnection.properties, null, 2)} onBlur={(event) => store.updateConnection(selectedConnection.id, { properties: toProperties(event.target.value) })} /><button type="button" className="danger" onClick={() => store.disconnect(selectedConnection.id)}>Delete connection</button></div> : <><p>Select an item on the canvas to inspect its details.</p><div className="inspector-rule" /><span className="muted">Use Ctrl/Command + C, V, D, Z or Y on the canvas.</span></>}{importError && <p className="error-message" role="alert">{importError}</p>}{store.saveError && <p className="error-message" role="alert">{store.saveError}</p>}{store.saveStatus === 'error' && <div className="recovery-actions"><button type="button" onClick={() => void store.retrySave()}>Retry save</button><button type="button" onClick={exportCurrentProject}>Export changes</button></div>}{store.saveStatus === 'conflict' && <div className="recovery-actions"><button type="button" onClick={() => void store.reloadSavedProject()}>Reload saved version</button><button type="button" onClick={exportCurrentProject}>Export my changes</button></div>}<div className="project-actions"><select aria-label="Open project" value={project.id} onChange={(event) => void store.openProject(event.target.value)}>{store.projects.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><button type="button" onClick={() => void store.createProject('Untitled project')}>New project</button><button type="button" onClick={() => void store.duplicateProject()}>Duplicate project</button><button type="button" onClick={exportCurrentProject}>Export backup</button><button type="button" className="danger" onClick={() => { if (window.confirm(`Delete “${project.name}”? This cannot be undone.`)) void store.deleteProject(project.id) }}>Delete project</button></div></aside> : <button className="open-inspector" type="button" onClick={() => setInspectorPanel('inspector')}>Open inspector</button>}
-  </main>{paletteOpen && <CommandPalette project={project} commands={paletteCommands} onClose={() => { setPaletteOpen(false); priorFocus.current?.focus() }} onResult={(result) => { setSelectedIds([result.id]); if (result.kind === 'connection') void flowInstance.current?.fitView({ padding: 0.25 }) }} />}</div>
+  const project = store.activeProject
+  const confirm = useCallback((request: ConfirmRequest): void => { setConfirmRequest(request) }, [])
+  const beginTitleEdit = useCallback((nodeId: string) => { setEditing({ nodeId, target: 'title', sequence: ++editSequence.current }) }, [])
+  const beginBodyEdit = useCallback((nodeId: string) => { setEditing({ nodeId, target: 'body', sequence: ++editSequence.current }) }, [])
+  const addChildAndEditTitle = useCallback((): void => {
+    const state = useProjectStore.getState()
+    const selected = useEditorStore.getState().selectedIds.find((id) => state.activeProject?.nodes.some((node) => node.id === id))
+    if (!selected) return
+    const id = state.addChildNode(selected, 'child')
+    if (id) setEditing({ nodeId: id, target: 'title', sequence: ++editSequence.current })
+  }, [])
+  const addSiblingAndEditTitle = useCallback((): void => {
+    const state = useProjectStore.getState()
+    const selected = useEditorStore.getState().selectedIds.find((id) => state.activeProject?.nodes.some((node) => node.id === id))
+    if (!selected) return
+    const id = state.addChildNode(selected, 'sibling')
+    if (id) setEditing({ nodeId: id, target: 'title', sequence: ++editSequence.current })
+  }, [])
+  const addNodeAtViewportCenter = useCallback((typeId?: string): void => {
+    const state = useProjectStore.getState()
+    if (!state.activeProject) return
+    const instance = flowInstance.current
+    const position = instance ? instance.screenToFlowPosition({ x: window.innerWidth / 2, y: window.innerHeight / 2 }) : { x: 120 + state.activeProject.nodes.length * 30, y: 100 + state.activeProject.nodes.length * 25 }
+    state.addNode(position, typeId)
+  }, [])
+  const addVisualNote = useCallback((): void => {
+    const state = useProjectStore.getState()
+    if (!state.activeProject) return
+    const instance = flowInstance.current
+    const position = instance ? instance.screenToFlowPosition({ x: window.innerWidth / 2, y: window.innerHeight / 2 }) : { x: 180, y: 220 }
+    state.addNote({ kind: 'project', id: state.activeProject.id }, position)
+  }, [])
+  const addLibraryNote = useCallback((): void => { useProjectStore.getState().addNote() }, [])
+  const exportCurrentProject = useCallback((): void => {
+    const active = useProjectStore.getState().activeProject
+    if (!active) return
+    void useProjectStore.getState().exportBackup().then((json) => { if (json) downloadProject(json, active.name) }).catch(() => undefined)
+  }, [])
+  const exportCurrentMarkdown = useCallback((): void => {
+    const active = useProjectStore.getState().activeProject
+    if (!active) return
+    downloadProject(exportMarkdown(active), active.name, 'md')
+  }, [])
+  const toggleSidebar = useCallback(() => { const editor = useEditorStore.getState(); editor.setSidebarOpen(!editor.sidebarOpen) }, [])
+  const selection = useMemo(() => project ? selectionEntities(project, selectedIds) : { nodes: [], groups: [], connections: [], notes: [] }, [project, selectedIds])
+  useShortcuts({
+    enabled: project !== null,
+    flowInstance: flowInstance.current,
+    requestImport: () => fileInput.current?.click(),
+    exportBackup: exportCurrentProject,
+    exportMarkdown: exportCurrentMarkdown,
+    beginTitleEdit,
+    addChildAndEditTitle,
+    addSiblingAndEditTitle,
+    addNodeAtViewportCenter,
+    addLibraryNote,
+    confirm,
+    toggleSidebar,
+  })
+  const registerInstance = useCallback((instance: ReactFlowInstance<FlowNode, FlowEdge>) => { flowInstance.current = instance; setFlowInstanceState(instance) }, [])
+  const focusItem = useCallback((id: string) => {
+    const editor = useEditorStore.getState()
+    editor.setSelectedIds([id])
+    editor.setDetailsOpen(false)
+    void flowInstance.current?.fitView({ nodes: [{ id }], padding: 0.5, duration: 300 })
+  }, [])
+  if (!project) return <Welcome projects={store.projects as ProjectSummary[]} onCreateProject={(name, templateId) => void store.createProject(name, templateId)} onOpenProject={(id) => void store.openProject(id)} />
+  const requestImport = () => fileInput.current?.click()
+  const onImportFile = (file: File) => { void file.text().then(store.importProject).then(() => setImportError(null)).catch((error: unknown) => setImportError(error instanceof Error ? error.message : 'Import failed.')) }
+  return (
+    <div className="editor-shell">
+      <Topbar
+        project={project}
+        saveStatus={store.saveStatus}
+        canUndo={store.history.length > 0}
+        canRedo={store.redoStack.length > 0}
+        sidebarOpen={sidebarOpen}
+        onToggleSidebar={toggleSidebar}
+        onRenameProject={store.renameProject}
+        onUndo={store.undo}
+        onRedo={store.redo}
+        onOpenPalette={() => { priorFocus.current = document.activeElement as HTMLElement | null; useEditorStore.getState().setDialog('palette') }}
+        onExportBackup={exportCurrentProject}
+        onExportMarkdown={exportCurrentMarkdown}
+        requestImport={requestImport}
+        onDuplicateProject={() => void store.duplicateProject()}
+        onDeleteProject={() => confirm({ title: 'Delete project', description: `Delete "${project.name}"? This cannot be undone.`, confirmLabel: 'Delete', danger: true, onConfirm: () => void store.deleteProject(project.id) })}
+      />
+      <input ref={fileInput} className="visually-hidden" aria-label="Import project file" type="file" accept="application/json" onChange={(event) => { const file = event.target.files?.[0]; if (file) onImportFile(file); event.currentTarget.value = '' }} />
+      <main className="workspace" aria-label="Mind Map editor" style={{ display: 'flex', height: 'calc(100dvh - 44px)' }}>
+        {smallViewport && sidebarOpen && <button type="button" className="sidebar-backdrop" aria-label="Close sidebar" onClick={toggleSidebar} />}
+        {sidebarOpen && (
+          <div className="sidebar-shell" style={{ width: sidebarWidth, flexShrink: 0 }}>
+          <Sidebar
+            project={project}
+            projects={store.projects}
+            selectedIds={selectedIds}
+            sidebarSections={sidebarSections}
+            onToggleSection={useEditorStore.getState().toggleSidebarSection}
+            onSelectIds={(ids) => useEditorStore.getState().setSelectedIds(ids)}
+            onFocusItem={focusItem}
+            onOpenNote={(noteId) => { useEditorStore.getState().setSelectedIds([noteId]); useEditorStore.getState().setDetailsOpen(true) }}
+            onAddLibraryNote={addLibraryNote}
+            onCreateProject={() => void store.createProject('Untitled project')}
+            onOpenProject={(id) => void store.openProject(id)}
+            onRenameProject={(id, name) => { if (id === project.id) store.renameProject(name) }}
+            onDuplicateProject={(id) => void store.duplicateProject(id)}
+            onExportProject={(id) => { if (id === project.id) exportCurrentProject() }}
+            onDeleteProject={(id) => { const name = store.projects.find((item) => item.id === id)?.name ?? 'this project'; confirm({ title: 'Delete project', description: `Delete "${name}"? This cannot be undone.`, confirmLabel: 'Delete', danger: true, onConfirm: () => void store.deleteProject(id) }) }}
+            onOpenPalette={() => useEditorStore.getState().setDialog('palette')}
+          />
+          </div>
+        )}
+        <section className="canvas-region" aria-label="Project canvas">
+          <Canvas
+            project={project}
+            registerInstance={registerInstance}
+            beginTitleEdit={beginTitleEdit}
+            beginBodyEdit={beginBodyEdit}
+            editingNodeId={editing?.nodeId ?? null}
+            editingTarget={editing?.target ?? 'title'}
+            editingSequence={editing?.sequence ?? 0}
+          >
+            <SelectionToolbar
+              project={project}
+              selection={selection}
+              confirm={confirm}
+              beginTitleEdit={beginTitleEdit}
+              openDetails={() => useEditorStore.getState().setDetailsOpen(true)}
+            />
+            <CanvasToolbar
+              project={project}
+              flowInstance={flowInstanceState}
+              selectionCount={selectedIds.length}
+              onAddNode={addNodeAtViewportCenter}
+              onAddNote={addVisualNote}
+              onGroup={() => store.createGroup(selectedIds)}
+              onFit={() => void flowInstance.current?.fitView({ padding: 0.2 })}
+              onOpenPalette={() => useEditorStore.getState().setDialog('palette')}
+            />
+          </Canvas>
+          {project.nodes.length === 0 && (
+            <div className="canvas-empty" aria-hidden="true">
+              <span>Start mapping your ideas</span>
+              <small>Add a node, then connect it to the next one.</small>
+            </div>
+          )}
+          <SaveBanner
+            saveStatus={store.saveStatus}
+            saveError={store.saveError}
+            importError={importError}
+            onRetry={() => void store.retrySave()}
+            onReloadSaved={() => void store.reloadSavedProject()}
+            onExportBackup={exportCurrentProject}
+            onDismissImportError={() => setImportError(null)}
+          />
+          <DetailsDrawer
+            open={detailsOpen}
+            project={project}
+            selectedIds={selectedIds}
+            onClose={() => useEditorStore.getState().setDetailsOpen(false)}
+            onAddAttachmentFile={(file, associations) => void store.addAttachmentFile(file, associations)}
+            onRemoveAttachment={(attachmentId) => store.removeAttachment(attachmentId)}
+          />
+        </section>
+        {detailsOpen && <div className="drawer-backdrop" aria-hidden="true" />}
+      </main>
+      {dialog === 'palette' && (
+        <CommandPalette
+          project={project}
+          flowInstance={flowInstanceState}
+          onClose={() => { useEditorStore.getState().setDialog('none'); priorFocus.current?.focus() }}
+          onResult={(result) => { focusItem(result.id); if (result.kind === 'note') useEditorStore.getState().setDetailsOpen(true) }}
+          requestImport={requestImport}
+          exportBackup={exportCurrentProject}
+          exportMarkdown={exportCurrentMarkdown}
+          beginTitleEdit={beginTitleEdit}
+          addChildAndEditTitle={addChildAndEditTitle}
+          addSiblingAndEditTitle={addSiblingAndEditTitle}
+          addNodeAtViewportCenter={addNodeAtViewportCenter}
+          addLibraryNote={addLibraryNote}
+          confirm={confirm}
+        />
+      )}
+      {confirmRequest && <ConfirmDialog request={confirmRequest} onCancel={() => setConfirmRequest(null)} />}
+    </div>
+  )
 }

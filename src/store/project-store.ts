@@ -2,7 +2,7 @@ import { create } from 'zustand'
 import { absolutePosition, descendantGroupIds, groupBounds, relativePosition } from '../domain/groups'
 import { parseProjectDocument, type ConnectionEntity, type GroupEntity, type NodeEntity, type NoteEntity, type ProjectDocument } from '../domain/project'
 import { createProjectDatabase, type ProjectDatabase } from '../storage/database'
-import { exportBackup as exportProjectBackup, parseBackup } from '../storage/attachments'
+import { addAttachment, exportBackup as exportProjectBackup, parseBackup } from '../storage/attachments'
 import { createProjectFromTemplate, type ProjectTemplateId } from '../templates/projectTemplates'
 
 export type SaveStatus = 'saved' | 'pending' | 'saving' | 'error' | 'conflict'
@@ -23,10 +23,15 @@ function withParent<T extends NodeEntity | GroupEntity>(item: T, parentGroupId: 
   return { ...withoutParent, position, ...(parentGroupId ? { parentGroupId } : {}) } as T
 }
 
-function defaultType(project: ProjectDocument): { project: ProjectDocument; typeId: string } {
-  if (project.nodeTypes[0] !== undefined) return { project, typeId: project.nodeTypes[0].id }
-  const typeId = crypto.randomUUID()
-  return { project: { ...project, nodeTypes: [{ id: typeId, name: 'Concept', color: '#7c6cff', icon: '◇', fields: [] }] }, typeId }
+function defaultType(project: ProjectDocument): { project: ProjectDocument; type: ProjectDocument['nodeTypes'][number] } {
+  if (project.nodeTypes[0] !== undefined) return { project, type: project.nodeTypes[0] }
+  const type: ProjectDocument['nodeTypes'][number] = { id: crypto.randomUUID(), name: 'Concept', color: '#7c6cff', icon: 'diamond', fields: [] }
+  return { project: { ...project, nodeTypes: [type] }, type }
+}
+
+function newNode(type: ProjectDocument['nodeTypes'][number], position: NodeEntity['position']): NodeEntity {
+  const properties = Object.fromEntries(type.fields.filter((field) => field.defaultValue !== undefined).map((field) => [field.id, copy(field.defaultValue)]))
+  return { id: crypto.randomUUID(), typeId: type.id, title: `New ${type.name}`, description: '', tags: [], properties, color: type.color, icon: type.icon, position, size: { width: 260, height: 180 } }
 }
 
 type RemappedProject = { project: ProjectDocument; ids: Map<string, string> }
@@ -92,18 +97,21 @@ type ProjectState = {
   duplicateProject: (id?: string) => Promise<void>
   applyDocument: (next: ProjectDocument, recordHistory?: boolean) => void
   renameProject: (name: string) => void
-  addNode: (position?: { x: number; y: number }) => void
+  addNode: (position?: NodeEntity['position'], typeId?: string) => string | undefined
+  addChildNode: (parentId: string, placement: 'child' | 'sibling') => string | undefined
   moveNodes: (positions: Record<string, { x: number; y: number }>) => void
   moveElements: (positions: Record<string, { x: number; y: number }>) => void
   createGroup: (ids: string[]) => void
   changeGroupParent: (groupId: string, parentGroupId?: string) => void
   ungroup: (groupId: string) => void
   deleteGroup: (groupId: string, descendants?: boolean) => void
-  resizeGroup: (groupId: string, size: { width: number; height: number }) => void
-  updateNode: (id: string, patch: Partial<Omit<NodeEntity, 'id' | 'typeId' | 'parentGroupId'>>) => void
+  resizeGroup: (groupId: string, size: GroupEntity['size'], position?: GroupEntity['position']) => void
+  updateGroup: (id: string, patch: Partial<Pick<GroupEntity, 'title' | 'color'>>) => void
+  updateNode: (id: string, patch: Partial<Omit<NodeEntity, 'id' | 'parentGroupId'>>) => void
   updateConnection: (id: string, patch: Partial<Pick<ConnectionEntity, 'label' | 'relation' | 'properties'>>) => void
   addNote: (association?: NoteEntity['association'], position?: { x: number; y: number }) => void
   updateNote: (id: string, patch: Partial<Omit<NoteEntity, 'id'>>) => void
+  resizeNote: (id: string, size: { width: number; height: number }, position?: { x: number; y: number }) => void
   deleteNote: (id: string) => void
   addNodeType: (name: string, color?: string, icon?: string) => void
   updateNodeType: (id: string, patch: Partial<Omit<ProjectDocument['nodeTypes'][number], 'id'>>) => boolean
@@ -112,7 +120,8 @@ type ProjectState = {
   pasteClipboard: () => void
   duplicateSelection: (ids: string[]) => void
   removeNodes: (ids: string[]) => void
-  connectNodes: (sourceNodeId: string, targetNodeId: string) => void
+  deleteSelection: (ids: string[]) => void
+  connectNodes: (sourceNodeId: string, targetNodeId: string, sourceHandle?: string | null, targetHandle?: string | null) => void
   disconnect: (id: string) => void
   undo: () => void
   redo: () => void
@@ -122,6 +131,8 @@ type ProjectState = {
   exportProject: () => string | null
   exportBackup: () => Promise<string | null>
   importProject: (json: string) => Promise<void>
+  addAttachmentFile: (file: File, associations: ProjectDocument['attachments'][number]['associations']) => Promise<void>
+  removeAttachment: (attachmentId: string) => void
 }
 
 function scheduleSave(): void {
@@ -196,12 +207,27 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     const project = get().activeProject
     if (project && name.trim()) get().applyDocument({ ...project, name: name.trim() })
   },
-  addNode: (position = { x: 80, y: 80 }) => {
+  addNode: (position = { x: 80, y: 80 }, typeId) => {
     const active = get().activeProject
     if (!active) return
     const prepared = defaultType(active)
-    const node: NodeEntity = { id: crypto.randomUUID(), typeId: prepared.typeId, title: 'New concept', description: '', tags: [], properties: {}, color: '#7c6cff', icon: '◇', position, size: { width: 180, height: 80 } }
+    const type = typeId === undefined ? prepared.type : active.nodeTypes.find((item) => item.id === typeId)
+    if (!type) return
+    const node = newNode(type, position)
     get().applyDocument({ ...prepared.project, nodes: [...prepared.project.nodes, node] })
+    return node.id
+  },
+  addChildNode: (parentId, placement) => {
+    const project = get().activeProject
+    const parent = project?.nodes.find((node) => node.id === parentId)
+    const type = project?.nodeTypes.find((item) => item.id === parent?.typeId)
+    if (!project || !parent || !type) return
+    const position = placement === 'child' ? { x: parent.position.x + parent.size.width + 60, y: parent.position.y } : { x: parent.position.x, y: parent.position.y + parent.size.height + 60 }
+    const node = withParent(newNode(type, position), parent.parentGroupId, position)
+    const incoming = placement === 'sibling' ? project.connections.find((edge) => edge.targetNodeId === parentId && edge.sourceNodeId !== parentId) : undefined
+    const connection: ConnectionEntity = { id: crypto.randomUUID(), sourceNodeId: incoming?.sourceNodeId ?? parentId, targetNodeId: node.id, label: '', relation: 'connects to', properties: {} }
+    get().applyDocument({ ...project, nodes: [...project.nodes, node], connections: [...project.connections, connection] })
+    return node.id
   },
   moveNodes: (positions) => {
     const project = get().activeProject
@@ -210,7 +236,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   moveElements: (positions) => {
     const project = get().activeProject
     if (!project) return
-    get().applyDocument({ ...project, nodes: project.nodes.map((node) => positions[node.id] ? { ...node, position: positions[node.id] } : node), groups: project.groups.map((group) => positions[group.id] ? { ...group, position: positions[group.id] } : group) })
+    get().applyDocument({ ...project, nodes: project.nodes.map((node) => positions[node.id] ? { ...node, position: positions[node.id] } : node), groups: project.groups.map((group) => positions[group.id] ? { ...group, position: positions[group.id] } : group), notes: project.notes.map((note) => positions[note.id] ? { ...note, position: positions[note.id] } : note) })
   },
   createGroup: (ids) => {
     const project = get().activeProject
@@ -239,24 +265,34 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     get().applyDocument({ ...project, groups: project.groups.map((item) => item.id === groupId ? withParent(item, parentGroupId, position) : item) })
   },
   ungroup: (groupId) => {
-    const project = get().activeProject; const group = project?.groups.find((item) => item.id === groupId)
-    if (!project || !group) return
-    const parentGroupId = group.parentGroupId; const childrenGroups = new Set(project.groups.filter((item) => item.parentGroupId === groupId).map((item) => item.id)); const childrenNodes = new Set(project.nodes.filter((item) => item.parentGroupId === groupId).map((item) => item.id))
-    get().applyDocument({ ...project, groups: project.groups.filter((item) => item.id !== groupId).map((item) => childrenGroups.has(item.id) ? withParent(item, parentGroupId, relativePosition(absolutePosition(item, project.groups), parentGroupId, project.groups)) : item), nodes: project.nodes.map((item) => childrenNodes.has(item.id) ? withParent(item, parentGroupId, relativePosition(absolutePosition(item, project.groups), parentGroupId, project.groups)) : item) })
+    const project = get().activeProject
+    if (project?.groups.some((group) => group.id === groupId)) get().deleteSelection([groupId])
   },
   deleteGroup: (groupId, descendants = false) => {
     const project = get().activeProject; const group = project?.groups.find((item) => item.id === groupId)
     if (!project || !group) return
     if (!descendants) { get().ungroup(groupId); return }
-    const removedGroups = descendantGroupIds(groupId, project.groups); const removedNodes = new Set(project.nodes.filter((node) => node.parentGroupId && removedGroups.has(node.parentGroupId)).map((node) => node.id)); const removedConnections = new Set(project.connections.filter((edge) => removedNodes.has(edge.sourceNodeId) || removedNodes.has(edge.targetNodeId)).map((edge) => edge.id))
-    get().applyDocument({ ...project, groups: project.groups.filter((item) => !removedGroups.has(item.id)), nodes: project.nodes.filter((item) => !removedNodes.has(item.id)), connections: project.connections.filter((item) => !removedConnections.has(item.id)), notes: project.notes.map((item) => (item.association.kind === 'group' && removedGroups.has(item.association.id)) || (item.association.kind === 'node' && removedNodes.has(item.association.id)) || (item.association.kind === 'connection' && removedConnections.has(item.association.id)) ? { ...item, association: { kind: 'project', id: project.id } } : item), attachments: project.attachments.map((item) => ({ ...item, associations: item.associations.filter((association) => !((association.kind === 'group' && removedGroups.has(association.id)) || (association.kind === 'node' && removedNodes.has(association.id)) || (association.kind === 'connection' && removedConnections.has(association.id)))) })) })
+    const removedGroups = descendantGroupIds(groupId, project.groups)
+    const removedNodes = project.nodes.filter((node) => node.parentGroupId && removedGroups.has(node.parentGroupId)).map((node) => node.id)
+    get().deleteSelection([...removedGroups, ...removedNodes])
   },
-  resizeGroup: (groupId, size) => {
+  resizeGroup: (groupId, size, position) => {
     const project = get().activeProject; const group = project?.groups.find((item) => item.id === groupId)
     if (!project || !group) return
-    const children = [...project.nodes.filter((item) => item.parentGroupId === groupId), ...project.groups.filter((item) => item.parentGroupId === groupId)]
-    const minWidth = Math.max(160, ...children.map((item) => item.position.x + item.size.width + 20)); const minHeight = Math.max(120, ...children.map((item) => item.position.y + item.size.height + 20))
-    get().applyDocument({ ...project, groups: project.groups.map((item) => item.id === groupId ? { ...item, size: { width: Math.max(size.width, minWidth), height: Math.max(size.height, minHeight) } } : item) })
+    const children = [...project.nodes.filter((item) => item.parentGroupId === groupId), ...project.groups.filter((item) => item.parentGroupId === groupId), ...project.notes.flatMap((item) => item.association.kind === 'group' && item.association.id === groupId && item.position ? [{ position: item.position, size: { width: 260, height: 180 } }] : [])]
+    const nextPosition = position ? { x: Math.min(position.x, group.position.x + Math.min(group.size.width - 160, ...children.map((item) => item.position.x))), y: Math.min(position.y, group.position.y + Math.min(group.size.height - 120, ...children.map((item) => item.position.y))) } : group.position
+    const delta = { x: group.position.x - nextPosition.x, y: group.position.y - nextPosition.y }
+    const shifted = (point: NodeEntity['position']) => ({ x: point.x + delta.x, y: point.y + delta.y })
+    const minWidth = Math.max(160, ...children.map((item) => item.position.x + delta.x + item.size.width + 20)); const minHeight = Math.max(120, ...children.map((item) => item.position.y + delta.y + item.size.height + 20))
+    get().applyDocument({ ...project,
+      groups: project.groups.map((item) => item.id === groupId ? { ...item, position: nextPosition, size: { width: Math.max(size.width, minWidth), height: Math.max(size.height, minHeight) } } : item.parentGroupId === groupId ? { ...item, position: shifted(item.position) } : item),
+      nodes: project.nodes.map((item) => item.parentGroupId === groupId ? { ...item, position: shifted(item.position) } : item),
+      notes: project.notes.map((item) => item.association.kind === 'group' && item.association.id === groupId && item.position ? { ...item, position: shifted(item.position) } : item),
+    })
+  },
+  updateGroup: (id, patch) => {
+    const project = get().activeProject
+    if (project) get().applyDocument({ ...project, groups: project.groups.map((group) => group.id === id ? { ...group, ...patch } : group) })
   },
   updateNode: (id, patch) => {
     const project = get().activeProject
@@ -275,6 +311,10 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   updateNote: (id, patch) => {
     const project = get().activeProject
     if (project) get().applyDocument({ ...project, notes: project.notes.map((note) => note.id === id ? { ...note, ...patch } : note) })
+  },
+  resizeNote: (id, size, position) => {
+    const project = get().activeProject
+    if (project) get().applyDocument({ ...project, notes: project.notes.map((note) => note.id === id ? { ...note, size, ...(position ? { position } : {}) } : note) })
   },
   deleteNote: (id) => { const project = get().activeProject; if (project) get().applyDocument({ ...project, notes: project.notes.filter((note) => note.id !== id) }) },
   addNodeType: (name, color = '#7c6cff', icon = '◇') => {
@@ -338,16 +378,43 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   },
   duplicateSelection: (ids) => { get().copySelection(ids); get().pasteClipboard() },
   removeNodes: (ids) => {
-    const project = get().activeProject; const removed = new Set(ids)
-    if (project && removed.size) get().applyDocument({ ...project, nodes: project.nodes.filter((node) => !removed.has(node.id)), connections: project.connections.filter((edge) => !removed.has(edge.sourceNodeId) && !removed.has(edge.targetNodeId)), notes: project.notes.map((note) => note.association.kind === 'node' && removed.has(note.association.id) ? { ...note, association: { kind: 'project', id: project.id } } : note) })
-  },
-  connectNodes: (sourceNodeId, targetNodeId) => {
     const project = get().activeProject
-    if (!project || sourceNodeId === targetNodeId || project.connections.some((edge) => edge.sourceNodeId === sourceNodeId && edge.targetNodeId === targetNodeId)) return
-    const connection: ConnectionEntity = { id: crypto.randomUUID(), sourceNodeId, targetNodeId, label: '', relation: 'connects to', properties: {} }
+    if (project) get().deleteSelection(project.nodes.filter((node) => ids.includes(node.id)).map((node) => node.id))
+  },
+  deleteSelection: (ids) => {
+    const project = get().activeProject
+    if (!project) return
+    const selected = new Set(ids)
+    const removed = new Set([...project.nodes, ...project.groups, ...project.notes, ...project.connections].filter((item) => selected.has(item.id)).map((item) => item.id))
+    if (!removed.size) return
+    project.connections.forEach((edge) => { if (removed.has(edge.sourceNodeId) || removed.has(edge.targetNodeId)) removed.add(edge.id) })
+    const survivingParent = (parentId: string | undefined): string | undefined => {
+      while (parentId && removed.has(parentId)) parentId = project.groups.find((group) => group.id === parentId)?.parentGroupId
+      return parentId
+    }
+    const reparent = <T extends NodeEntity | GroupEntity>(item: T): T => {
+      if (!item.parentGroupId || !removed.has(item.parentGroupId)) return item
+      const parentId = survivingParent(item.parentGroupId)
+      return withParent(item, parentId, relativePosition(absolutePosition(item, project.groups), parentId, project.groups))
+    }
+    get().applyDocument({ ...project,
+      nodes: project.nodes.filter((node) => !removed.has(node.id)).map(reparent),
+      groups: project.groups.filter((group) => !removed.has(group.id)).map(reparent),
+      connections: project.connections.filter((edge) => !removed.has(edge.id)),
+      notes: project.notes.filter((note) => !removed.has(note.id)).map((note) => removed.has(note.association.id) ? { ...note, association: { kind: 'project', id: project.id }, ...(note.association.kind === 'group' && note.position ? { position: absolutePosition({ position: note.position, parentGroupId: note.association.id }, project.groups) } : {}) } : note),
+      attachments: project.attachments.map((attachment) => ({ ...attachment, associations: attachment.associations.filter((association) => !removed.has(association.id)) })),
+    })
+  },
+  connectNodes: (sourceNodeId, targetNodeId, sourceHandle, targetHandle) => {
+    const project = get().activeProject
+    if (!project || sourceNodeId === targetNodeId || !project.nodes.some((node) => node.id === sourceNodeId) || !project.nodes.some((node) => node.id === targetNodeId) || project.connections.some((edge) => edge.sourceNodeId === sourceNodeId && edge.targetNodeId === targetNodeId)) return
+    const connection: ConnectionEntity = { id: crypto.randomUUID(), sourceNodeId, targetNodeId, ...(sourceHandle ? { sourceHandle } : {}), ...(targetHandle ? { targetHandle } : {}), label: '', relation: 'connects to', properties: {} }
     get().applyDocument({ ...project, connections: [...project.connections, connection] })
   },
-  disconnect: (id) => { const project = get().activeProject; if (project) get().applyDocument({ ...project, connections: project.connections.filter((edge) => edge.id !== id) }) },
+  disconnect: (id) => {
+    const project = get().activeProject
+    if (project?.connections.some((edge) => edge.id === id)) get().deleteSelection([id])
+  },
   undo: () => {
     const { activeProject, history, redoStack } = get(); const previous = history.at(-1)
     if (!activeProject || !previous) return
@@ -439,6 +506,23 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     const project = remapImportedProject(source).project
     await database.projects.put(project)
     set((state) => ({ projects: [summary(project), ...state.projects], activeProject: project, history: [], redoStack: [], saveStatus: 'saved', saveError: null, conflictProject: null }))
+  },
+  addAttachmentFile: async (file, associations) => {
+    const project = get().activeProject
+    if (!project) return
+    try {
+      const next = await addAttachment(database, project, file, associations)
+      set((state) => ({ activeProject: next, projects: state.projects.map((item) => item.id === next.id ? summary(next) : item) }))
+    } catch (error) {
+      set({ saveStatus: 'error', saveError: error instanceof Error ? error.message : 'Unable to add attachment.' })
+    }
+  },
+  removeAttachment: (attachmentId) => {
+    const project = get().activeProject
+    const attachment = project?.attachments.find((item) => item.id === attachmentId)
+    if (!project || !attachment) return
+    get().applyDocument({ ...project, attachments: project.attachments.filter((item) => item.id !== attachmentId) })
+    if (attachment.location.kind === 'local' && hasAttachments(database)) void database.attachments.delete(attachmentId)
   },
 }))
 

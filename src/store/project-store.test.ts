@@ -191,4 +191,85 @@ describe('project store', () => {
     expect(useProjectStore.getState().saveStatus).toBe('error')
     expect(useProjectStore.getState().activeProject?.nodes).toHaveLength(1)
   })
+
+  it('creates a child with its connection in a single undo step', () => {
+    const store = useProjectStore.getState()
+    store.addNode({ x: 100, y: 100 })
+    const parent = useProjectStore.getState().activeProject!.nodes[0]
+    const childId = store.addChildNode(parent.id, 'child')
+    expect(childId).toBeDefined()
+    const afterAdd = useProjectStore.getState().activeProject!
+    expect(afterAdd.nodes).toHaveLength(2)
+    expect(afterAdd.connections).toHaveLength(1)
+    expect(afterAdd.connections[0]).toMatchObject({ sourceNodeId: parent.id, targetNodeId: childId })
+    store.undo()
+    const undone = useProjectStore.getState().activeProject!
+    expect(undone.nodes).toHaveLength(1)
+    expect(undone.connections).toHaveLength(0)
+    store.redo()
+    expect(useProjectStore.getState().activeProject!.connections).toHaveLength(1)
+  })
+
+  it('creates a sibling below with the same type and group as its parent', () => {
+    const store = useProjectStore.getState()
+    store.addNode({ x: 100, y: 100 })
+    const parent = useProjectStore.getState().activeProject!.nodes[0]
+    const childId = store.addChildNode(parent.id, 'child')
+    const child = useProjectStore.getState().activeProject!.nodes.find((node) => node.id === childId)!
+    const siblingId = store.addChildNode(child.id, 'sibling')
+    const sibling = useProjectStore.getState().activeProject!.nodes.find((node) => node.id === siblingId)!
+    expect(sibling.typeId).toBe(child.typeId)
+    expect(sibling.position.y).toBeGreaterThan(child.position.y)
+    expect(sibling.parentGroupId).toBe(child.parentGroupId)
+    const incoming = useProjectStore.getState().activeProject!.connections.find((edge) => edge.targetNodeId === siblingId)
+    expect(incoming?.sourceNodeId).toBe(parent.id)
+  })
+
+  it('applies the chosen type color and icon when adding a node', () => {
+    const store = useProjectStore.getState()
+    useProjectStore.setState({ activeProject: { ...createEmptyProject({ name: 'Typed' }), nodeTypes: [{ id: crypto.randomUUID(), name: 'Database', color: '#e3a968', icon: 'database', fields: [] }] } })
+    const typeId = useProjectStore.getState().activeProject!.nodeTypes[0].id
+    store.addNode({ x: 0, y: 0 }, typeId)
+    const node = useProjectStore.getState().activeProject!.nodes[0]
+    expect(node.title).toBe('New Database')
+    expect(node.color).toBe('#e3a968')
+    expect(node.icon).toBe('database')
+  })
+
+  it('renames a group through updateGroup', () => {
+    const store = useProjectStore.getState()
+    store.addNode({ x: 0, y: 0 })
+    const node = useProjectStore.getState().activeProject!.nodes[0]
+    store.createGroup([node.id])
+    const group = useProjectStore.getState().activeProject!.groups[0]
+    store.updateGroup(group.id, { title: 'Boundary', color: '#62c6a4' })
+    const updated = useProjectStore.getState().activeProject!.groups.find((item) => item.id === group.id)
+    expect(updated).toMatchObject({ title: 'Boundary', color: '#62c6a4' })
+  })
+
+  it('persists visual note positions through moveElements', () => {
+    const store = useProjectStore.getState()
+    store.addNote({ kind: 'project', id: useProjectStore.getState().activeProject!.id }, { x: 40, y: 50 })
+    const note = useProjectStore.getState().activeProject!.notes[0]
+    expect(note.position).toEqual({ x: 40, y: 50 })
+    store.moveElements({ [note.id]: { x: 220, y: 130 } })
+    const moved = useProjectStore.getState().activeProject!.notes[0]
+    expect(moved.position).toEqual({ x: 220, y: 130 })
+    store.undo()
+    expect(useProjectStore.getState().activeProject!.notes[0].position).toEqual({ x: 40, y: 50 })
+  })
+
+  it('resizes a note as a single undo step', () => {
+    const store = useProjectStore.getState()
+    store.addNote({ kind: 'project', id: useProjectStore.getState().activeProject!.id }, { x: 40, y: 50 })
+    const note = useProjectStore.getState().activeProject!.notes[0]
+    const historyBefore = useProjectStore.getState().history.length
+    store.resizeNote(note.id, { width: 320, height: 220 }, { x: 60, y: 70 })
+    const resized = useProjectStore.getState().activeProject!.notes[0]
+    expect(resized.size).toEqual({ width: 320, height: 220 })
+    expect(resized.position).toEqual({ x: 60, y: 70 })
+    expect(useProjectStore.getState().history.length).toBe(historyBefore + 1)
+    store.undo()
+    expect(useProjectStore.getState().activeProject!.notes[0].size).toBeUndefined()
+  })
 })

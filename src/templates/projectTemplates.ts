@@ -1,15 +1,15 @@
 import { createEmptyProject, type ProjectDocument } from '../domain/project'
 
 export type ProjectTemplateId = 'blank' | 'system-design' | 'network'
-export type ProjectTemplate = { id: ProjectTemplateId; name: string; nodeTypes: Array<{ name: string; color: string; icon: string }> }
+export type ProjectTemplate = { id: ProjectTemplateId; name: string; description: string; nodeTypes: Array<{ name: string; color: string; icon: string }> }
 
 export const projectTemplates: ProjectTemplate[] = [
-  { id: 'blank', name: 'Blank', nodeTypes: [{ name: 'Concept', color: '#7c6cff', icon: '◇' }] },
-  { id: 'system-design', name: 'System Design', nodeTypes: [
-    ['Frontend', '#7c6cff', '◫'], ['Backend', '#5c9cff', '◆'], ['API', '#62c6a4', '↔'], ['Database', '#e3a968', '▣'], ['Cache', '#e580a1', '◌'], ['Queue', '#d5b86a', '≋'], ['CDN', '#6dc6d7', '◉'], ['Load Balancer', '#b897e7', '⇄'], ['Object Storage', '#8793a8', '◈'],
+  { id: 'blank', name: 'Blank', description: 'Start empty with a single generic concept type.', nodeTypes: [{ name: 'Concept', color: '#7c6cff', icon: 'diamond' }] },
+  { id: 'system-design', name: 'System Design', description: 'Frontend, backend, data stores, and infrastructure types ready to go.', nodeTypes: [
+    ['Frontend', '#7c6cff', 'monitor'], ['Backend', '#5c9cff', 'server'], ['API', '#62c6a4', 'arrow-left-right'], ['Database', '#e3a968', 'database'], ['Cache', '#e580a1', 'zap'], ['Queue', '#d5b86a', 'layers'], ['CDN', '#6dc6d7', 'globe'], ['Load Balancer', '#b897e7', 'split'], ['Object Storage', '#8793a8', 'archive'],
   ].map(([name, color, icon]) => ({ name, color, icon })) },
-  { id: 'network', name: 'Network', nodeTypes: [
-    ['Router', '#7c6cff', '◉'], ['Switch', '#5c9cff', '◇'], ['Firewall', '#e58070', '▰'], ['VLAN', '#62c6a4', '▱'], ['Server', '#e3a968', '▣'], ['Endpoint', '#8793a8', '◦'],
+  { id: 'network', name: 'Network', description: 'Routers, switches, firewalls, and endpoints for network diagrams.', nodeTypes: [
+    ['Router', '#7c6cff', 'router'], ['Switch', '#5c9cff', 'network'], ['Firewall', '#e58070', 'shield'], ['VLAN', '#62c6a4', 'layers'], ['Server', '#e3a968', 'server'], ['Endpoint', '#8793a8', 'monitor'],
   ].map(([name, color, icon]) => ({ name, color, icon })) },
 ]
 
